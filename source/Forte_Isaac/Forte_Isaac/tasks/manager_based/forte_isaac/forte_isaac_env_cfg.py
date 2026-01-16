@@ -4,6 +4,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import math
+import sys
+import os
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -16,165 +18,112 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
+from isaaclab.sensors.camera import Camera, CameraCfg
+from isaaclab.sensors import ContactSensorCfg
 
-from . import mdp
+# from . import mdp
+import isaaclab_tasks.manager_based.manipulation.reach.mdp as mdp
+from isaaclab_tasks.manager_based.manipulation.reach.reach_env_cfg import ReachEnvCfg
+from isaaclab_tasks.manager_based.manipulation.pick_place.pickplace_forte_env_cfg import PickPlaceForteEnvCfg
+from isaaclab_tasks.manager_based.manipulation.lift.config.forte.joint_pos_env_cfg import ForteCubeLiftEnvCfg
 
-##
-# Pre-defined configs
-##
+#sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'lift')))
 
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # isort:skip
+#import joint_pos_env_cfg
 
+from Forte_Isaac.forte import FORTE_CFG
 
-##
-# Scene definition
-##
+'''
+camera_cfg = CameraCfg(
+    prim_path="{ENV_REGEX_NS}/Robot/wrist_link/Realsense/RSD455",
+    update_period=0.1,
+    height=480,
+    width=640,
+    data_types=["rgb", "distance_to_image_plane"],
+    spawn=sim_utils.PinholeCameraCfg(
+        focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 1.0e5)
+    ),
+)'''
+
+@configclass
+class ForteReachEnvCfg(ReachEnvCfg):
+    #camera = Camera(cfg=camera_cfg)
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+
+        # switch robot to franka
+        self.scene.robot = FORTE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        # override rewards
+        self.rewards.end_effector_position_tracking.params["asset_cfg"].body_names = ["end_effector_link"]
+        self.rewards.end_effector_position_tracking_fine_grained.params["asset_cfg"].body_names = ["end_effector_link"]
+        self.rewards.end_effector_orientation_tracking.params["asset_cfg"].body_names = ["end_effector_link"]
+
+        # override actions
+        self.actions.arm_action = mdp.JointPositionActionCfg(
+            asset_name="robot", joint_names=["shoulder_yaw", "shoulder_pitch", "shoulder_roll", "elbow_pitch", "lower_arm_roll", "wrist_pitch", "wrist_roll"], scale=0.5, use_default_offset=True
+        )
+        # override command generator body
+        # end-effector is along z-direction
+        self.commands.ee_pose.body_name = "end_effector_link"
+
+        # Why not (-math.pi, math.pi)
+        self.commands.ee_pose.ranges.pitch = (math.pi, math.pi)
+
+@configclass
+class ForteReachEnvCfg_PLAY(ForteReachEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        # make a smaller scene for play
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        # disable randomization for play
+        self.observations.policy.enable_corruption = False
 
 
 @configclass
-class ForteIsaacSceneCfg(InteractiveSceneCfg):
-    """Configuration for a cart-pole scene."""
+class FortePickPlaceEnvCfg(PickPlaceForteEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
 
-    # ground plane
-    ground = AssetBaseCfg(
-        prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
-    )
-
-    # robot
-    robot: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-
-    # lights
-    dome_light = AssetBaseCfg(
-        prim_path="/World/DomeLight",
-        spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
-    )
-
-
-##
-# MDP settings
-##
-
+        self.scene.robot = FORTE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.actions.arm_action = mdp.JointPositionActionCfg(
+            asset_name="robot", joint_names=["shoulder_yaw", "shoulder_pitch", "shoulder_roll", "elbow_pitch", "lower_arm_roll", "wrist_pitch", "wrist_roll"], scale=0.5, use_default_offset=True
+        )
+        self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
+            asset_name="robot",
+            joint_names=[".*_end_effector_joint"],
+            open_command_expr={".*_end_effector_joint": 0.04},
+            close_command_expr={".*_end_effector_joint": 0.0},
+        )
 
 @configclass
-class ActionsCfg:
-    """Action specifications for the MDP."""
-
-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=100.0)
-
-
-@configclass
-class ObservationsCfg:
-    """Observation specifications for the MDP."""
-
-    @configclass
-    class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
-
-        # observation terms (order preserved)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
-
-        def __post_init__(self) -> None:
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    # observation groups
-    policy: PolicyCfg = PolicyCfg()
-
+class FortePickPlaceEnvCfg_PLAY(FortePickPlaceEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        # make a smaller scene for play
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        # disable randomization for play
+        self.observations.policy.enable_corruption = False
 
 @configclass
-class EventCfg:
-    """Configuration for events."""
+class ForteLiftEnvCfg(ForteCubeLiftEnvCfg):
+    #camera = Camera(cfg=camera_cfg)
+    def __post_init__(self):
+        super().__post_init__()
 
-    # reset
-    reset_cart_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]),
-            "position_range": (-1.0, 1.0),
-            "velocity_range": (-0.5, 0.5),
-        },
-    )
-
-    reset_pole_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]),
-            "position_range": (-0.25 * math.pi, 0.25 * math.pi),
-            "velocity_range": (-0.25 * math.pi, 0.25 * math.pi),
-        },
-    )
-
+        self.scene.robot = FORTE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
 @configclass
-class RewardsCfg:
-    """Reward terms for the MDP."""
-
-    # (1) Constant running reward
-    alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    # (2) Failure penalty
-    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
-    # (3) Primary task: keep pole upright
-    pole_pos = RewTerm(
-        func=mdp.joint_pos_target_l2,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]), "target": 0.0},
-    )
-    # (4) Shaping tasks: lower cart velocity
-    cart_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.01,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"])},
-    )
-    # (5) Shaping tasks: lower pole angular velocity
-    pole_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.005,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"])},
-    )
-
-
-@configclass
-class TerminationsCfg:
-    """Termination terms for the MDP."""
-
-    # (1) Time out
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # (2) Cart out of bounds
-    cart_out_of_bounds = DoneTerm(
-        func=mdp.joint_pos_out_of_manual_limit,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]), "bounds": (-3.0, 3.0)},
-    )
-
-
-##
-# Environment configuration
-##
-
-
-@configclass
-class ForteIsaacEnvCfg(ManagerBasedRLEnvCfg):
-    # Scene settings
-    scene: ForteIsaacSceneCfg = ForteIsaacSceneCfg(num_envs=4096, env_spacing=4.0)
-    # Basic settings
-    observations: ObservationsCfg = ObservationsCfg()
-    actions: ActionsCfg = ActionsCfg()
-    events: EventCfg = EventCfg()
-    # MDP settings
-    rewards: RewardsCfg = RewardsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-
-    # Post initialization
-    def __post_init__(self) -> None:
-        """Post initialization."""
-        # general settings
-        self.decimation = 2
-        self.episode_length_s = 5
-        # viewer settings
-        self.viewer.eye = (8.0, 0.0, 5.0)
-        # simulation settings
-        self.sim.dt = 1 / 120
-        self.sim.render_interval = self.decimation
+class ForteLiftEnvCfg_PLAY(ForteLiftEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        # make a smaller scene for play
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        # disable randomization for play
+        self.observations.policy.enable_corruption = False
